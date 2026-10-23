@@ -17,8 +17,9 @@ use windows_sys::Win32::Graphics::Dwm::{
 };
 use windows_sys::Win32::Graphics::Gdi::{
     ChangeDisplaySettingsExW, ClientToScreen, CreateRectRgn, DeleteObject, InvalidateRgn,
-    RedrawWindow, CDS_FULLSCREEN, DISP_CHANGE_BADFLAGS, DISP_CHANGE_BADMODE, DISP_CHANGE_BADPARAM,
-    DISP_CHANGE_FAILED, DISP_CHANGE_SUCCESSFUL, RDW_INTERNALPAINT,
+    MonitorFromPoint, RedrawWindow, CDS_FULLSCREEN, DISP_CHANGE_BADFLAGS, DISP_CHANGE_BADMODE,
+    DISP_CHANGE_BADPARAM, DISP_CHANGE_FAILED, DISP_CHANGE_SUCCESSFUL, MONITOR_DEFAULTTONEAREST,
+    RDW_INTERNALPAINT,
 };
 use windows_sys::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
@@ -31,17 +32,18 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::Input::Touch::{RegisterTouchWindow, TWF_WANTPALM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, EnableMenuItem, FlashWindowEx, GetClientRect, GetCursorPos,
-    GetForegroundWindow, GetSystemMenu, GetSystemMetrics, GetWindowPlacement, GetWindowTextLengthW,
-    GetWindowTextW, IsWindowVisible, LoadCursorW, PeekMessageW, PostMessageW, RegisterClassExW,
-    SetCursor, SetCursorPos, SetForegroundWindow, SetMenuDefaultItem, SetWindowDisplayAffinity,
-    SetWindowPlacement, SetWindowPos, SetWindowTextW, TrackPopupMenu, CS_HREDRAW, CS_VREDRAW,
-    CW_USEDEFAULT, FLASHWINFO, FLASHW_ALL, FLASHW_STOP, FLASHW_TIMERNOFG, FLASHW_TRAY,
-    GWLP_HINSTANCE, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTLEFT, HTRIGHT, HTTOP,
-    HTTOPLEFT, HTTOPRIGHT, MENU_ITEM_STATE, MFS_DISABLED, MFS_ENABLED, MF_BYCOMMAND, NID_READY,
-    PM_NOREMOVE, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SM_DIGITIZER,
-    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, TPM_LEFTALIGN, TPM_RETURNCMD,
-    WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_NCLBUTTONDOWN, WM_SYSCOMMAND, WNDCLASSEXW,
+    AdjustWindowRectEx, CreateWindowExW, EnableMenuItem, FlashWindowEx, GetClientRect,
+    GetCursorPos, GetForegroundWindow, GetSystemMenu, GetSystemMetrics, GetWindowPlacement,
+    GetWindowTextLengthW, GetWindowTextW, IsWindowVisible, LoadCursorW, PeekMessageW, PostMessageW,
+    RegisterClassExW, SetCursor, SetCursorPos, SetForegroundWindow, SetMenuDefaultItem,
+    SetWindowDisplayAffinity, SetWindowPlacement, SetWindowPos, SetWindowTextW, TrackPopupMenu,
+    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, FLASHWINFO, FLASHW_ALL, FLASHW_STOP, FLASHW_TIMERNOFG,
+    FLASHW_TRAY, GWLP_HINSTANCE, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTLEFT, HTRIGHT,
+    HTTOP, HTTOPLEFT, HTTOPRIGHT, MENU_ITEM_STATE, MFS_DISABLED, MFS_ENABLED, MF_BYCOMMAND,
+    NID_READY, PM_NOREMOVE, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE,
+    SM_DIGITIZER, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, TPM_LEFTALIGN,
+    TPM_RETURNCMD, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_NCLBUTTONDOWN, WM_SYSCOMMAND, WNDCLASSEXW,
+    WS_OVERLAPPEDWINDOW,
 };
 
 use tracing::warn;
@@ -56,7 +58,7 @@ use crate::platform_impl::platform::definitions::{
     CLSID_TaskbarList, IID_ITaskbarList, IID_ITaskbarList2, ITaskbarList, ITaskbarList2,
 };
 use crate::platform_impl::platform::dpi::{
-    dpi_to_scale_factor, enable_non_client_dpi_scaling, hwnd_dpi,
+    dpi_to_scale_factor, enable_non_client_dpi_scaling, get_monitor_dpi, hwnd_dpi, BASE_DPI,
 };
 use crate::platform_impl::platform::drop_handler::FileDropHandler;
 use crate::platform_impl::platform::event_loop::{self, ActiveEventLoop, DESTROY_MSG_ID};
@@ -1282,6 +1284,9 @@ impl InitData<'_> {
 
         if let Some(position) = attributes.position {
             win.set_outer_position(position);
+        } else if let Some(position) = attributes.cascade_from {
+            let anchor = position.to_physical::<i32>(win.scale_factor());
+            win.set_outer_position(cascade_position(anchor, win.outer_size()).into());
         }
 
         win.set_system_backdrop(self.attributes.platform_specific.backdrop_type);
@@ -1404,6 +1409,45 @@ unsafe fn init(
     }
 
     Ok(win)
+}
+
+/// Offsets `anchor` by the title bar height on its monitor, or uses the top-left corner of the
+/// monitor's work area when a window of `size` wouldn't fit.
+fn cascade_position(
+    anchor: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+) -> PhysicalPosition<i32> {
+    // SAFETY: No pointers are passed.
+    let hmonitor =
+        unsafe { MonitorFromPoint(POINT { x: anchor.x, y: anchor.y }, MONITOR_DEFAULTTONEAREST) };
+    let work_area = match monitor::get_monitor_info(hmonitor) {
+        Ok(info) => info.monitorInfo.rcWork,
+        Err(_) => return anchor,
+    };
+
+    let dpi = get_monitor_dpi(hmonitor).unwrap_or(BASE_DPI);
+    let mut frame = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    match *util::ADJUST_WINDOW_RECT_EX_FOR_DPI {
+        // SAFETY: `frame` is a valid `RECT`.
+        Some(adjust_window_rect_ex_for_dpi) => unsafe {
+            adjust_window_rect_ex_for_dpi(&mut frame, WS_OVERLAPPEDWINDOW, false.into(), 0, dpi)
+        },
+        // SAFETY: `frame` is a valid `RECT`.
+        None => unsafe { AdjustWindowRectEx(&mut frame, WS_OVERLAPPEDWINDOW, false.into(), 0) },
+    };
+    let offset = -frame.top;
+
+    let (x, y) = (anchor.x + offset, anchor.y + offset);
+    let fits = x >= work_area.left
+        && y >= work_area.top
+        && x + size.width as i32 <= work_area.right
+        && y + size.height as i32 <= work_area.bottom;
+
+    if fits {
+        PhysicalPosition::new(x, y)
+    } else {
+        PhysicalPosition::new(work_area.left, work_area.top)
+    }
 }
 
 unsafe fn register_window_class(class_name: &[u16]) {

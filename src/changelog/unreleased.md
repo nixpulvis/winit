@@ -39,3 +39,7 @@ The migration guide could reference other migration examples in the current
 changelog entry.
 
 ## Unreleased
+
+### Added
+
+- Add `WindowAttributes::with_cascade_from`, implemented on Windows and macOS.

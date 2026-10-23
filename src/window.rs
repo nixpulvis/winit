@@ -106,6 +106,7 @@ pub struct WindowAttributes {
     pub min_inner_size: Option<Size>,
     pub max_inner_size: Option<Size>,
     pub position: Option<Position>,
+    pub cascade_from: Option<Position>,
     pub resizable: bool,
     pub enabled_buttons: WindowButtons,
     pub title: String,
@@ -137,6 +138,7 @@ impl Default for WindowAttributes {
             min_inner_size: None,
             max_inner_size: None,
             position: None,
+            cascade_from: None,
             resizable: true,
             enabled_buttons: WindowButtons::all(),
             title: "winit window".to_owned(),
@@ -247,6 +249,22 @@ impl WindowAttributes {
     #[inline]
     pub fn with_position<P: Into<Position>>(mut self, position: P) -> Self {
         self.position = Some(position.into());
+        self
+    }
+
+    /// Requests the window to be cascaded from another window.
+    ///
+    /// `position` is the outer position of the window to cascade from, see
+    /// [`Window::outer_position`]. Ignored if [`WindowAttributes::with_position`] is set.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **macOS:** Uses `cascadeTopLeftFromPoint:`.
+    /// - **Windows:** Offset by the title bar height and kept inside the monitor's work area.
+    /// - **iOS / Android / Web / Wayland / X11 / Orbital:** Unsupported.
+    #[inline]
+    pub fn with_cascade_from<P: Into<Position>>(mut self, position: P) -> Self {
+        self.cascade_from = Some(position.into());
         self
     }
 

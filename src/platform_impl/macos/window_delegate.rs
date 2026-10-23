@@ -504,12 +504,12 @@ fn new_window(
             Some(Fullscreen::Borderless(None)) => NSScreen::mainScreen(mtm),
             None => None,
         };
+        let scale_factor = NSScreen::mainScreen(mtm)
+            .map(|screen| screen.backingScaleFactor() as f64)
+            .unwrap_or(1.0);
         let frame = match &screen {
             Some(screen) => screen.frame(),
             None => {
-                let scale_factor = NSScreen::mainScreen(mtm)
-                    .map(|screen| screen.backingScaleFactor() as f64)
-                    .unwrap_or(1.0);
                 let size = match attrs.inner_size {
                     Some(size) => {
                         let size = size.to_logical(scale_factor);
@@ -626,8 +626,22 @@ fn new_window(
         if !attrs.platform_specific.has_shadow {
             window.setHasShadow(false);
         }
-        if attrs.position.is_none() {
-            window.center();
+        match (attrs.position, attrs.cascade_from) {
+            (Some(_), _) => (),
+            (None, Some(position)) => {
+                let position = position.to_logical(scale_factor);
+                let top_left = flip_window_screen_coordinates(NSRect::new(
+                    NSPoint::new(position.x, position.y),
+                    NSSize::new(0.0, 0.0),
+                ));
+                // The first call moves the window to `top_left` and returns the next cascade point.
+                // SAFETY: Only takes a point. `objc2-app-kit` 0.2 just doesn't mark it as safe.
+                unsafe {
+                    let cascaded = window.cascadeTopLeftFromPoint(top_left);
+                    window.cascadeTopLeftFromPoint(cascaded);
+                }
+            },
+            (None, None) => window.center(),
         }
 
         let view = WinitView::new(

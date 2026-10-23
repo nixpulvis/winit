@@ -126,6 +126,7 @@ impl Application {
         &mut self,
         event_loop: &ActiveEventLoop,
         _tab_id: Option<String>,
+        cascade_from: Option<PhysicalPosition<i32>>,
     ) -> Result<WindowId, Box<dyn Error>> {
         // TODO read-out activation token.
 
@@ -134,6 +135,10 @@ impl Application {
             .with_title("Winit window")
             .with_transparent(true)
             .with_window_icon(Some(self.icon.clone()));
+
+        if let Some(position) = cascade_from {
+            window_attributes = window_attributes.with_cascade_from(position);
+        }
 
         #[cfg(any(x11_platform, wayland_platform))]
         if let Some(token) = event_loop.read_token_from_env() {
@@ -209,7 +214,8 @@ impl Application {
                     return;
                 }
 
-                if let Err(err) = self.create_window(event_loop, None) {
+                let cascade_from = window.window.outer_position().ok();
+                if let Err(err) = self.create_window(event_loop, None, cascade_from) {
                     error!("Error creating new window: {err}");
                 }
             },
@@ -245,7 +251,7 @@ impl Application {
             #[cfg(macos_platform)]
             Action::CreateNewTab => {
                 let tab_id = window.window.tabbing_identifier();
-                if let Err(err) = self.create_window(event_loop, Some(tab_id)) {
+                if let Err(err) = self.create_window(event_loop, Some(tab_id), None) {
                     error!("Error creating new window: {err}");
                 }
             },
@@ -426,7 +432,7 @@ impl ApplicationHandler<UserEvent> for Application {
                 #[cfg(any(x11_platform, wayland_platform))]
                 {
                     startup_notify::set_activation_token_env(_token);
-                    if let Err(err) = self.create_window(event_loop, None) {
+                    if let Err(err) = self.create_window(event_loop, None, None) {
                         error!("Error creating new window: {err}");
                     }
                 }
@@ -494,7 +500,7 @@ impl ApplicationHandler<UserEvent> for Application {
         self.dump_monitors(event_loop);
 
         // Create initial window.
-        self.create_window(event_loop, None).expect("failed to create initial window");
+        self.create_window(event_loop, None, None).expect("failed to create initial window");
 
         self.print_help();
     }
